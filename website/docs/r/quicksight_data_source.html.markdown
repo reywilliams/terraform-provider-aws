@@ -204,6 +204,7 @@ To specify data source connection parameters, exactly one of the following sub-o
 ### athena Argument Reference
 
 * `work_group` - (Optional) The work-group to which to connect.
+* `role_arn` - (Optional) Use the `role_arn` to override an account-wide role for a specific S3 data source. For example, say an account administrator has turned off all S3 access with an account-wide role. The administrator can then use `role_arn` to bypass the account-wide role and allow S3 access for the single S3 data source that is specified in the structure, even if the account-wide role forbidding S3 access is still active.
 
 ### aurora Argument Reference
 
