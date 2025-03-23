@@ -483,6 +483,8 @@ resource "aws_s3_bucket_public_access_block" "test" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
+
+  depends_on = [aws_s3_bucket.test]
 }
 
 resource "aws_s3_object" "test_data" {
@@ -1019,15 +1021,23 @@ resource "aws_athena_database" "test" {
 
 resource "aws_iam_policy" "test-athena" {
   name        = %[1]q
-  description = "Allow read/write access to S3 for Athena"
+  description = "Allow access to S3 for Athena"
 
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Action   = ["s3:GetObject", "s3:PutObject"]
+        Action   = [
+          // "s3:GetBucketLocation",
+          // "s3:GetObject",
+          // "s3:ListBucket",
+          // "s3:CreateBucket",
+          // "s3:PutObject"
+          "s3:*"
+        ]
         Effect   = "Allow"
-        Resource = "${aws_s3_bucket.test.arn}/*"
+        // Resource = "${aws_s3_bucket.test.arn}/*"
+        Resource = "arn:aws:s3:::*"
       }
     ]
   })
@@ -1053,6 +1063,19 @@ resource "aws_iam_role" "test-athena" {
 resource "aws_iam_role_policy_attachment" "test-athena" {
   policy_arn = aws_iam_policy.test-athena.arn
   role       = aws_iam_role.test-athena.name
+}
+
+resource "aws_athena_workgroup" "test" {
+  name = %[1]q
+
+
+  configuration {
+    enforce_workgroup_configuration = true
+    result_configuration {
+      output_location = "s3://${aws_s3_bucket.test.bucket}/athena-results/"
+    }
+    execution_role = aws_iam_role.test-athena.arn
+  }
 }
 
 resource "aws_athena_named_query" "test" {
@@ -1131,16 +1154,26 @@ resource "aws_iam_role_policy_attachment" "test" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSQuicksightAthenaAccess"
 }
 
+resource "aws_iam_role_policy_attachment" "test1-athena" {
+  role       = aws_iam_role.test.name
+  policy_arn = aws_iam_policy.test-athena.arn
+}
+
 resource "aws_iam_role_policy_attachment" "test2" {
   role       = aws_iam_role.test2.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSQuicksightAthenaAccess"
+}
+
+resource "aws_iam_role_policy_attachment" "test2-athena" {
+  role       = aws_iam_role.test2.name
+  policy_arn = aws_iam_policy.test-athena.arn
 }
 
 resource "aws_quicksight_data_source" "test" {
   data_source_id = %[1]q
   name           = %[2]q
   type           = "ATHENA"
-
+  aws_account_id = data.aws_caller_identity.current.account_id
 
   parameters {
     athena {
@@ -1151,7 +1184,11 @@ resource "aws_quicksight_data_source" "test" {
 
   depends_on = [
     aws_iam_role_policy_attachment.test,
-    aws_iam_role_policy_attachment.test2
+    aws_iam_role_policy_attachment.test2,
+    aws_iam_role_policy_attachment.test1-athena,
+    aws_iam_role_policy_attachment.test2-athena,
+    aws_athena_named_query.test,
+    aws_athena_workgroup.test,
   ]
 }
 `, rId, rName, rName2, rName3, iamRoleResourceName))
