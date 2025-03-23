@@ -336,6 +336,56 @@ func testAccCheckDataSourceDestroy(ctx context.Context) resource.TestCheckFunc {
 	}
 }
 
+func TestAccQuickSightDataSource_AthenaRoleARN(t *testing.T) {
+	ctx := acctest.Context(t)
+	var dataSource awstypes.DataSource
+
+	resourceName := "aws_quicksight_data_source.test"
+	rName := sdkacctest.RandomWithPrefix(acctest.ResourcePrefix)
+	rName2 := sdkacctest.RandomWithPrefix(acctest.ResourcePrefix)
+	rName3 := sdkacctest.RandomWithPrefix(acctest.ResourcePrefix)
+	rId := sdkacctest.RandomWithPrefix(acctest.ResourcePrefix)
+	iamRoleResourceName := "aws_iam_role.test"
+	iamRoleResourceNameUpdated := "aws_iam_role.test2"
+
+	resource.ParallelTest(t, resource.TestCase{
+		PreCheck:                 func() { acctest.PreCheck(ctx, t) },
+		ProtoV5ProviderFactories: acctest.ProtoV5ProviderFactories,
+		ErrorCheck:               acctest.ErrorCheck(t, names.QuickSightServiceID),
+		CheckDestroy:             testAccCheckDataSourceDestroy(ctx),
+		Steps: []resource.TestStep{
+			{
+				Config: testAccDataSourceConfig_athenaRoleARN(rId, rName, rName2, rName3, iamRoleResourceName),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckDataSourceExists(ctx, resourceName, &dataSource),
+					resource.TestCheckResourceAttr(resourceName, "data_source_id", rId),
+					resource.TestCheckResourceAttr(resourceName, "parameters.0.athena.#", "1"),
+					resource.TestCheckResourceAttr(resourceName, "parameters.0.athena.0.work_group", rName),
+					resource.TestCheckResourceAttrPair(resourceName, "parameters.0.athena.0.role_arn", iamRoleResourceName, names.AttrARN),
+					resource.TestCheckResourceAttr(resourceName, names.AttrType, string(awstypes.DataSourceTypeAthena)),
+				),
+			},
+			{
+				ResourceName:      resourceName,
+				ImportState:       true,
+				ImportStateVerify: true,
+			},
+			// switch role_arn to second role defined
+			{
+				Config: testAccDataSourceConfig_athenaRoleARN(rId, rName, rName2, rName3, iamRoleResourceNameUpdated),
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckDataSourceExists(ctx, resourceName, &dataSource),
+					resource.TestCheckResourceAttr(resourceName, "data_source_id", rId),
+					resource.TestCheckResourceAttr(resourceName, "parameters.0.athena.#", "1"),
+					resource.TestCheckResourceAttr(resourceName, "parameters.0.athena.0.work_group", rName),
+					resource.TestCheckResourceAttrPair(resourceName, "parameters.0.athena.0.role_arn", iamRoleResourceNameUpdated, names.AttrARN),
+					resource.TestCheckResourceAttr(resourceName, names.AttrType, string(awstypes.DataSourceTypeAthena)),
+				),
+			},
+		},
+	})
+}
+
 func testAccDataSourceConfig_base(rName string) string {
 	return fmt.Sprintf(`
 data "aws_partition" "current" {}
@@ -958,4 +1008,151 @@ resource "aws_quicksight_data_source" "test" {
   ]
 }
 `, rId, rName, rName2, iamRoleResourceName))
+}
+
+func testAccDataSourceConfig_athenaConfig(rName string) string {
+	return fmt.Sprintf(`
+resource "aws_athena_database" "test" {
+  name   = "test"
+  bucket = aws_s3_bucket.test.id
+}
+
+resource "aws_iam_policy" "test-athena" {
+  name        = %[1]q
+  description = "Allow read/write access to S3 for Athena"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action   = ["s3:GetObject", "s3:PutObject"]
+        Effect   = "Allow"
+        Resource = "${aws_s3_bucket.test.arn}/*"
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role" "test-athena" {
+  name = %[1]q
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "athena.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "test-athena" {
+  policy_arn = aws_iam_policy.test-athena.arn
+  role       = aws_iam_role.test-athena.name
+}
+
+resource "aws_athena_named_query" "test" {
+  name     = %[1]q
+  database = aws_athena_database.test.name
+  query    = <<EOF
+    CREATE EXTERNAL TABLE IF NOT EXISTS %[1]q (
+      aaa STRING,
+      bbb INT
+    )
+    ROW FORMAT DELIMITED
+    FIELDS TERMINATED BY ','
+    LOCATION 's3://${aws_s3_bucket.test.bucket}/%[1]q-test-data.csv';
+EOF
+  workgroup = aws_athena_workgroup.test.name
+}
+
+resource "aws_athena_workgroup" "test" {
+  name = %[1]q
+
+
+  configuration {
+    enforce_workgroup_configuration = true
+    result_configuration {
+      output_location = "s3://${aws_s3_bucket.test.bucket}/athena-results/"
+    }
+    execution_role = aws_iam_role.test-athena.arn
+  }
+}
+`, rName)
+}
+
+func testAccDataSourceConfig_athenaRoleARN(rId, rName, rName2, rName3, iamRoleResourceName string) string {
+	return acctest.ConfigCompose(
+		testAccDataSourceConfig_baseNoACL(rName),
+		testAccDataSourceConfig_athenaConfig(rName3),
+		fmt.Sprintf(`
+data "aws_caller_identity" "current" {}
+
+resource "aws_iam_role" "test" {
+  name = %[2]q
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "quicksight.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role" "test2" {
+  name = %[3]q
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "quicksight.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "test" {
+  role       = aws_iam_role.test.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSQuicksightAthenaAccess"
+}
+
+resource "aws_iam_role_policy_attachment" "test2" {
+  role       = aws_iam_role.test2.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSQuicksightAthenaAccess"
+}
+
+resource "aws_quicksight_data_source" "test" {
+  data_source_id = %[1]q
+  name           = %[2]q
+  type           = "ATHENA"
+
+
+  parameters {
+    athena {
+      work_group = %[4]q
+      role_arn = %[5]s.arn
+    }
+  }
+
+  depends_on = [
+    aws_iam_role_policy_attachment.test,
+    aws_iam_role_policy_attachment.test2
+  ]
+}
+`, rId, rName, rName2, rName3, iamRoleResourceName))
 }
